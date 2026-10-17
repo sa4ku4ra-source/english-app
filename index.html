@@ -26,15 +26,16 @@
       <div id="chat" class="chat"></div>
       <p id="chat-hint" class="muted small hint">
         英語でも日本語でも、普段どおり話しかけてください。AIはずっと英語で返します。<br>
-        「これ英語でなんて言う？」と聞いた表現はストックされ、「他の言い方ある？」でもう1つ追加されます。<br>
+        「これ英語でなんて言う？」と聞いた表現や、英語で言えずに日本語で話した部分はストックされ、「他の言い方ある？」でもう1つ追加されます。<br>
+        🎤で話している途中でも、🇺🇸/🇯🇵ボタンで英語⇄日本語を切り替えられます。<br>
         わからない単語は<b>長押し</b>で調べられます。
       </p>
       <div id="feedback" hidden></div>
       <div class="composer">
         <textarea id="chat-input" rows="2" placeholder="英語で（困ったら日本語でもOK）"></textarea>
         <div class="row">
-          <button id="mic-en" class="btn mic" type="button">🎤 英語</button>
-          <button id="mic-ja" class="btn mic" type="button">🎤 日本語</button>
+          <button id="mic" class="btn mic" type="button">🎤 話す</button>
+          <button id="mic-lang" class="btn lang" type="button" title="話している途中でも切り替えられます">🇺🇸 英語</button>
           <button id="send" class="btn primary" type="button">送信</button>
         </div>
         <button id="end-talk" class="btn danger wide" type="button">会話を終了してフィードバックを見る</button>

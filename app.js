@@ -197,8 +197,7 @@ function stopSpeaking() {
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let activeRec = null;
 
-// continuous: もう一度ボタンを押すまで聞き続ける（長い文・普段の速さでも途切れない）
-function listen(lang, button, { continuous = false, onInterim } = {}) {
+function listen(lang, button) {
   return new Promise((resolve, reject) => {
     if (!Recognition) return reject(new Error("このブラウザは音声入力に対応していません（Chrome / Safari 推奨）"));
     if (activeRec) {
@@ -208,42 +207,21 @@ function listen(lang, button, { continuous = false, onInterim } = {}) {
     stopSpeaking();
     const rec = new Recognition();
     rec.lang = lang;
-    rec.continuous = continuous;
-    rec.interimResults = continuous;
     rec.maxAlternatives = 3;
     activeRec = rec;
-    const label = button?.textContent;
-    if (button) {
-      button.classList.add("listening");
-      if (continuous) button.textContent = "■ 話し終えたらタップ";
-    }
-    const finals = [];
-    const sep = lang.startsWith("ja") ? "" : " ";
-    let alternatives = [];
+    button?.classList.add("listening");
+    let result = null;
     rec.onresult = (e) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) {
-          finals[i] = r[0].transcript;
-          if (!continuous) alternatives = Array.from(r).map((a) => a.transcript);
-        } else {
-          interim += r[0].transcript;
-        }
-      }
-      onInterim?.((finals.filter(Boolean).join(sep) + sep + interim).trim());
+      const r = e.results[0];
+      result = { transcript: r[0].transcript, alternatives: Array.from(r).map((a) => a.transcript) };
     };
     rec.onerror = (e) => {
       if (e.error !== "no-speech" && e.error !== "aborted") toast(`音声入力エラー: ${e.error}`);
     };
     rec.onend = () => {
       activeRec = null;
-      if (button) {
-        button.classList.remove("listening");
-        button.textContent = label;
-      }
-      const transcript = finals.filter(Boolean).join(sep).replace(/\s+/g, " ").trim();
-      resolve(transcript ? { transcript, alternatives: alternatives.length ? alternatives : [transcript] } : null);
+      button?.classList.remove("listening");
+      resolve(result);
     };
     rec.start();
   });
@@ -572,6 +550,7 @@ Conversation style:
 Expressions the learner asks for (this is how their personal phrase stock grows):
 - When they ask how to say something (e.g. "これ英語でなんて言う？", "How do you say ...?", "英語で〜って言いたい"), give the ONE most natural way a native would say it, right in your reply, briefly and without explanation, then keep chatting. Put it in new_expressions with its Japanese meaning and alternative_of "".
 - When they ask for another way to say it (e.g. "他の言い方ある？", "Any other way to say it?"), give exactly ONE different natural expression and put it in new_expressions with alternative_of set to the exact English of the expression it's an alternative to.
+- When they fall back to Japanese for something they couldn't say in English (a Japanese word or phrase mixed into an English sentence, or a whole line in Japanese), say it back naturally the way a native would ("Oh, you took a little detour?") and keep chatting. Put that natural English in new_expressions with its Japanese meaning and alternative_of "".
 - Otherwise new_expressions is empty. Never add expressions or example sentences they didn't ask for.
 
 Output: reply is exactly what you say out loud.`;
@@ -705,31 +684,97 @@ $("#chat-input").addEventListener("keydown", (e) => {
   }
 });
 
-async function micSend(lang, btn) {
-  const input = $("#chat-input");
-  const before = input.value.trim();
-  try {
-    const r = await listen(lang, btn, {
-      continuous: true,
-      onInterim: (t) => (input.value = (before + " " + t).trim()),
-    });
-    if (r === null && activeRec === null && !input.value.trim()) return;
-    const text = r ? (before + " " + r.transcript).trim() : input.value.trim();
-    if (text) {
-      input.value = "";
-      sendToAI(text);
+// ---------- 会話の音声入力 ----------
+// もう一度タップするまで聞き続ける。話している途中でも英語⇄日本語を切り替えられ、
+// 切り替えのたびに認識をつなぎ直して、それまでに聞き取った分は parts に残す
+let micLang = "en";
+let dict = null; // { before, parts, current, wanted, switching, rec }
+
+const micLangCode = () => (micLang === "ja" ? "ja-JP" : ACCENT_LANG[settings.accent] || "en-US");
+
+function renderMicLang() {
+  const b = $("#mic-lang");
+  b.textContent = micLang === "ja" ? "🇯🇵 日本語" : "🇺🇸 英語";
+  b.classList.toggle("ja", micLang === "ja");
+}
+
+const dictText = () => [dict.before, ...dict.parts, dict.current].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+
+function runDictation() {
+  const rec = new Recognition();
+  const sep = micLang === "ja" ? "" : " ";
+  rec.lang = micLangCode();
+  rec.continuous = true;
+  rec.interimResults = true;
+  dict.rec = rec;
+  const startedAt = Date.now();
+  const finals = [];
+  rec.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finals[i] = r[0].transcript;
+      else interim += r[0].transcript;
     }
-  } catch (e) {
-    toast(errMessage(e));
+    dict.current = (finals.filter(Boolean).join(sep) + sep + interim).trim();
+    $("#chat-input").value = dictText();
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      dict.wanted = false;
+      toast("マイクの使用が許可されていません。ブラウザの設定で許可してください");
+    } else if (e.error !== "no-speech" && e.error !== "aborted") {
+      toast(`音声入力エラー: ${e.error}`);
+    }
+  };
+  rec.onend = () => {
+    // 確定しきらなかった分も残す
+    if (dict.current) dict.parts.push(dict.current);
+    dict.current = "";
+    // 言語の切り替え、または途中で勝手に止まった時はつなぎ直す（すぐ止まる時はエラーとみなして終了）
+    const restart = dict.wanted && (dict.switching || Date.now() - startedAt > 1000);
+    dict.switching = false;
+    if (restart) return runDictation();
+    finishDictation();
+  };
+  rec.start();
+}
+
+function startDictation() {
+  if (!Recognition) return toast("このブラウザは音声入力に対応していません（Chrome / Safari 推奨）");
+  stopSpeaking();
+  dict = { before: $("#chat-input").value.trim(), parts: [], current: "", wanted: true, switching: false };
+  $("#mic").classList.add("listening");
+  $("#mic").textContent = "■ 話し終えたらタップ";
+  runDictation();
+}
+
+function finishDictation() {
+  const spoke = dict.parts.length > 0;
+  const text = dictText();
+  dict = null;
+  $("#mic").classList.remove("listening");
+  $("#mic").textContent = "🎤 話す";
+  micLang = "en";
+  renderMicLang();
+  if (spoke && text) {
+    $("#chat-input").value = "";
+    sendToAI(text);
   }
 }
-$("#mic-en").addEventListener("click", (e) => {
-  if (activeRec) return activeRec.stop();
-  micSend(ACCENT_LANG[settings.accent] || "en-US", e.currentTarget);
+
+$("#mic").addEventListener("click", () => {
+  if (!dict) return startDictation();
+  dict.wanted = false;
+  dict.rec.stop();
 });
-$("#mic-ja").addEventListener("click", (e) => {
-  if (activeRec) return activeRec.stop();
-  micSend("ja-JP", e.currentTarget);
+$("#mic-lang").addEventListener("click", () => {
+  micLang = micLang === "en" ? "ja" : "en";
+  renderMicLang();
+  if (dict) {
+    dict.switching = true;
+    dict.rec.stop();
+  }
 });
 
 function resetTalk(targets = []) {

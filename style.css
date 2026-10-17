@@ -83,6 +83,8 @@ input[type="range"] { width: 100%; }
 .btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
 .btn.wide { width: 100%; margin-top: 10px; }
 .btn.mic { flex: 1; }
+.btn.lang { min-width: 6.5em; }
+.btn.lang.ja { background: #fde68a; color: #111; border-color: #f59e0b; }
 .btn.listening { background: var(--danger); color: #fff; border-color: var(--danger); animation: pulse 1.2s infinite; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.small { padding: 6px 10px; font-size: .85rem; }
