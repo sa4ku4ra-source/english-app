@@ -38,9 +38,10 @@ let toastTimer;
 function toast(msg) {
   const el = $("#toast");
   el.textContent = msg;
+  el.style.whiteSpace = "pre-line";
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 3500);
+  toastTimer = setTimeout(() => (el.hidden = true), 6000);
 }
 
 function showView(name) {
@@ -99,9 +100,13 @@ function parseJson(text) {
 }
 
 function errMessage(e) {
-  if (e?.status === 401) return "APIキーが正しくないようです（設定を確認してください）";
-  if (e?.status === 429) return "混み合っています。少し待ってからもう一度どうぞ";
-  return e?.message || String(e);
+  const detail = e?.error?.error?.message;
+  const suffix = detail ? `\n（詳細: ${detail}）` : "";
+  if (e?.status === 401) return `APIキーが正しくないようです。キー全体（sk-ant-api03-…で始まる長い文字列）を貼り直してください${suffix}`;
+  if (e?.status === 403) return `このキーでは利用できません。Consoleで権限・ワークスペースを確認してください${suffix}`;
+  if (e?.status === 429) return `混み合っているか、利用上限に達しています。少し待ってからもう一度どうぞ${suffix}`;
+  if (e?.status === 400 && /credit|billing/i.test(detail || "")) return `クレジット残高が足りません。ConsoleのBillingでクレジットを追加してください${suffix}`;
+  return detail || e?.message || String(e);
 }
 
 // ---------- 音声（読み上げ） ----------
@@ -715,9 +720,15 @@ $("#rate-val").textContent = `×${settings.rate}`;
 $("#accent").value = settings.accent;
 
 $("#api-key").addEventListener("change", (e) => {
-  settings.apiKey = e.target.value.trim();
+  // コピー時に混ざった空白・改行を取り除く
+  settings.apiKey = e.target.value.replace(/\s+/g, "");
+  e.target.value = settings.apiKey;
   saveSettings();
-  toast("APIキーを保存しました");
+  if (settings.apiKey && !settings.apiKey.startsWith("sk-ant-")) {
+    toast("APIキーは「sk-ant-」で始まる文字列です。コピーした内容を確認してください");
+  } else {
+    toast(`APIキーを保存しました（${settings.apiKey.length}文字）`);
+  }
 });
 $("#model").addEventListener("change", (e) => { settings.model = e.target.value; saveSettings(); });
 $("#voice").addEventListener("change", (e) => { settings.voice = e.target.value; saveSettings(); });
