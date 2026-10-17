@@ -63,7 +63,9 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
 
 // onText を渡すとストリーミングで受け取り、届いた分のテキストを都度渡す
-async function callClaude({ system, messages, effort = "low", schema, maxTokens = 4000, onText }) {
+// dropMismatchedThinking: 会話の履歴を送る時に指定。前提（指示文・モデル）が変わって使えなくなった
+// 思考ブロックはエラーにせず捨てて続ける
+async function callClaude({ system, messages, effort = "low", schema, maxTokens = 4000, onText, dropMismatchedThinking }) {
   if (!settings.apiKey) {
     showView("settings");
     throw new Error("先に設定でAPIキーを入力してください");
@@ -78,11 +80,17 @@ async function callClaude({ system, messages, effort = "low", schema, maxTokens 
   };
   if (schema) params.output_config.format = { type: "json_schema", schema };
 
-  const useBeta = FALLBACK_MODELS.has(settings.model);
-  const body = useBeta
-    ? { ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" }
-    : params;
-  const api = useBeta ? client.beta.messages : client.messages;
+  const betas = [];
+  if (FALLBACK_MODELS.has(settings.model)) {
+    betas.push("server-side-fallback-2026-07-01");
+    params.fallbacks = "default";
+  }
+  if (dropMismatchedThinking) {
+    betas.push("thinking-binding-controls-2026-08-01");
+    params.thinking = { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } };
+  }
+  const body = betas.length ? { ...params, betas } : params;
+  const api = betas.length ? client.beta.messages : client.messages;
 
   let res;
   if (onText) {
@@ -509,8 +517,9 @@ $("#search").addEventListener("input", renderLibrary);
 // ---------- 会話 ----------
 // history: API に送る履歴（返ってきた content は改変せずに積む）
 // log: 画面表示とフィードバック用
-const talk = Object.assign({ history: [], log: [], targets: [], busy: false }, load(TALK_KEY, {}), { busy: false });
-const saveTalk = () => save(TALK_KEY, { history: talk.history, log: talk.log, targets: talk.targets });
+// system: 会話を始めた時の指示文。途中で変えると以前の思考ブロックが無効になるため、会話中は固定する
+const talk = Object.assign({ history: [], log: [], targets: [], system: "", busy: false }, load(TALK_KEY, {}), { busy: false });
+const saveTalk = () => save(TALK_KEY, { history: talk.history, log: talk.log, targets: talk.targets, system: talk.system });
 
 const CHAT_SCHEMA = {
   type: "object",
@@ -610,6 +619,7 @@ async function sendToAI(userText, { hidden = false } = {}) {
     talk.log.push(entry);
     addBubble(entry);
   }
+  if (!talk.system) talk.system = talkSystem();
   talk.history.push({ role: "user", content: userText });
   const typing = document.createElement("div");
   typing.className = "msg ai typing";
@@ -620,10 +630,11 @@ async function sendToAI(userText, { hidden = false } = {}) {
   let shown = null;
   try {
     const { content, text } = await callClaude({
-      system: talkSystem(),
+      system: talk.system,
       messages: talk.history,
       effort: "low",
       schema: CHAT_SCHEMA,
+      dropMismatchedThinking: true,
       maxTokens: 3000,
       // 返事の文ができた時点で読み上げを始める
       onText: (soFar) => {
@@ -802,7 +813,7 @@ $("#mic-lang").addEventListener("click", () => {
 });
 
 function resetTalk(targets = []) {
-  Object.assign(talk, { history: [], log: [], targets, busy: false });
+  Object.assign(talk, { history: [], log: [], targets, system: "", busy: false });
   saveTalk();
   renderChat();
 }
