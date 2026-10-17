@@ -57,7 +57,8 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 // サーバー側フォールバック（安全分類器が拒否した時に別モデルで再実行）に対応するモデル
 const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
 
-async function callClaude({ system, messages, effort = "low", schema, maxTokens = 4000 }) {
+// onText を渡すとストリーミングで受け取り、届いた分のテキストを都度渡す
+async function callClaude({ system, messages, effort = "low", schema, maxTokens = 4000, onText }) {
   if (!settings.apiKey) {
     showView("settings");
     throw new Error("先に設定でAPIキーを入力してください");
@@ -72,15 +73,23 @@ async function callClaude({ system, messages, effort = "low", schema, maxTokens 
   };
   if (schema) params.output_config.format = { type: "json_schema", schema };
 
+  const useBeta = FALLBACK_MODELS.has(settings.model);
+  const body = useBeta
+    ? { ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" }
+    : params;
+  const api = useBeta ? client.beta.messages : client.messages;
+
   let res;
-  if (FALLBACK_MODELS.has(settings.model)) {
-    res = await client.beta.messages.create({
-      ...params,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+  if (onText) {
+    const stream = api.stream(body);
+    let soFar = "";
+    stream.on("text", (delta) => {
+      soFar += delta;
+      onText(soFar);
     });
+    res = await stream.finalMessage();
   } else {
-    res = await client.messages.create(params);
+    res = await api.create(body);
   }
 
   if (res.stop_reason === "refusal") {
@@ -305,15 +314,36 @@ Fields:
 - scene: a short Japanese label for the situation (e.g. "友達との予定").`;
 }
 
-async function translate(ja, context, fixedEnglish) {
+// ストリーミング途中のJSONから、書き終わった "english" の値を取り出す
+function earlyEnglish(partial) {
+  const m = partial.match(/"english"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!m) return null;
+  try {
+    return JSON.parse(`"${m[1]}"`);
+  } catch {
+    return null;
+  }
+}
+
+async function translate(ja, context, fixedEnglish, onEnglish) {
   let prompt = `Japanese: ${ja}`;
   if (context) prompt += `\nSituation: ${context}`;
   if (fixedEnglish) prompt += `\nUse exactly this English as the main expression: ${fixedEnglish}`;
   const { text } = await callClaude({
     system: translateSystem(),
     messages: [{ role: "user", content: prompt }],
-    effort: "medium",
+    effort: "low",
     schema: PHRASE_SCHEMA,
+    onText: onEnglish
+      ? (soFar) => {
+          if (!onEnglish) return;
+          const en = earlyEnglish(soFar);
+          if (en) {
+            onEnglish(en);
+            onEnglish = null;
+          }
+        }
+      : undefined,
   });
   const data = parseJson(text);
   return {
@@ -339,14 +369,20 @@ $("#translate-btn").addEventListener("click", async () => {
   btn.disabled = true;
   $("#translate-result").innerHTML = `<p class="spinner">ネイティブ表現を考えています…</p>`;
   try {
-    const item = await translate(ja, $("#ctx-input").value.trim());
+    let spoken = null;
+    // 英文ができた時点で先に表示・読み上げ（発音のコツなどは後から届く）
+    const item = await translate(ja, $("#ctx-input").value.trim(), "", (en) => {
+      spoken = en;
+      $("#translate-result").innerHTML = `<div class="card phrase"><div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div><p class="spinner">発音のコツ・言い換えを準備中…</p></div>`;
+      speak(en);
+    });
     items.unshift(item);
     saveItems();
     $("#ja-input").value = "";
     $("#ctx-input").value = "";
     $("#translate-result").innerHTML = "";
     $("#translate-result").append(phraseCard(item, { fresh: true }));
-    speak(item.en);
+    if (spoken !== item.en) speak(item.en);
   } catch (e) {
     $("#translate-result").innerHTML = "";
     toast(errMessage(e));
