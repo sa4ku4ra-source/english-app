@@ -1,0 +1,139 @@
+:root {
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --text: #1c2333;
+  --muted: #6b7385;
+  --line: #e3e6ee;
+  --primary: #2563eb;
+  --primary-ink: #ffffff;
+  --accent: #eef3ff;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --me: #2563eb;
+  --ai: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f131c;
+    --card: #181d29;
+    --text: #e6e9f0;
+    --muted: #98a0b3;
+    --line: #2a3142;
+    --primary: #5b8cff;
+    --accent: #1e2740;
+    --me: #3b6ef0;
+    --ai: #1f2533;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif;
+  line-height: 1.6;
+}
+main { max-width: 720px; margin: 0 auto; padding: 0 16px 120px; }
+
+.topbar { max-width: 720px; margin: 0 auto; padding: 20px 16px 8px; }
+.topbar h1 { margin: 0; font-size: 1.4rem; }
+.sub { margin: 0; color: var(--muted); font-size: .85rem; }
+
+.tabs {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; gap: 4px;
+  max-width: 720px; margin: 0 auto; padding: 8px 16px;
+  background: var(--bg);
+}
+.tab {
+  flex: 1; padding: 10px 4px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--text); font-size: .9rem; cursor: pointer;
+}
+.tab.active { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+
+.view { display: none; }
+.view.active { display: block; }
+
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 16px; margin: 12px 0;
+}
+.label { display: block; font-weight: 600; margin: 8px 0 6px; }
+.small { font-size: .82rem; }
+.muted { color: var(--muted); }
+
+textarea, input[type="text"], input[type="search"], input[type="password"], select {
+  width: 100%; padding: 10px 12px; font-size: 1rem;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--text); font-family: inherit;
+}
+input[type="range"] { width: 100%; }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.row > input { flex: 1; }
+
+.btn {
+  padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); font-size: .95rem; cursor: pointer;
+}
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); flex: 1; }
+.btn.ghost { background: transparent; }
+.btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.btn.wide { width: 100%; margin-top: 10px; }
+.btn.mic { flex: 1; }
+.btn.listening { background: var(--danger); color: #fff; border-color: var(--danger); animation: pulse 1.2s infinite; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.small { padding: 6px 10px; font-size: .85rem; }
+.btn.file { display: inline-block; }
+@keyframes pulse { 50% { opacity: .65; } }
+
+/* フレーズカード */
+.phrase .ja { color: var(--muted); font-size: .9rem; }
+.phrase .en { font-size: 1.25rem; font-weight: 700; margin: 4px 0; }
+.phrase .sounds { font-family: ui-monospace, Menlo, monospace; color: var(--primary); font-size: .95rem; }
+.phrase .sounds-ja { color: var(--muted); font-size: .85rem; }
+.phrase ul { margin: 6px 0; padding-left: 1.2em; }
+.phrase details { margin-top: 8px; }
+.phrase summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.tag { display: inline-block; font-size: .75rem; padding: 1px 8px; border-radius: 99px; background: var(--accent); color: var(--primary); margin-right: 4px; }
+.alt { padding: 6px 0; border-top: 1px dashed var(--line); }
+.alt:first-child { border-top: none; }
+.player { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.check-result { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--accent); font-size: .95rem; }
+.w-ok { color: var(--ok); font-weight: 600; }
+.w-miss { color: var(--danger); font-weight: 600; text-decoration: underline wavy; }
+.stats { font-size: .78rem; color: var(--muted); margin-top: 6px; }
+
+/* 会話 */
+.pick { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.pick input { margin-top: 6px; }
+.targets { font-size: .85rem; padding: 8px 0; }
+.targets .tag { margin-bottom: 4px; }
+.chat { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 16px; }
+.msg { max-width: 85%; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); }
+.msg.ai { align-self: flex-start; background: var(--ai); }
+.msg.me { align-self: flex-end; background: var(--me); color: #fff; border-color: var(--me); }
+.msg .tools { margin-top: 4px; }
+.msg .tools button { font-size: .8rem; padding: 2px 8px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+.msg.typing { color: var(--muted); font-style: italic; }
+.composer {
+  position: sticky; bottom: 0; background: var(--bg);
+  padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+}
+
+/* フィードバック */
+.fb-item { border-left: 4px solid var(--warn); padding: 8px 12px; margin: 10px 0; background: var(--card); border-radius: 0 10px 10px 0; }
+.fb-item.ja { border-left-color: var(--primary); }
+.fb-item .said { color: var(--muted); text-decoration: line-through; }
+.fb-item.ja .said { text-decoration: none; }
+.fb-item .better { font-weight: 700; font-size: 1.1rem; margin: 4px 0; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: #111827; color: #fff; padding: 10px 16px; border-radius: 10px;
+  font-size: .9rem; z-index: 20; max-width: 90vw;
+}
+.spinner { color: var(--muted); padding: 12px 0; }
