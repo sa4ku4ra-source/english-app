@@ -600,7 +600,8 @@ function scrollChatEnd() {
 }
 
 async function sendToAI(userText, { hidden = false } = {}) {
-  if (talk.busy) return;
+  if (talk.busy) return toast("返事を待っています…");
+  document.querySelectorAll(".msg-error").forEach((x) => x.remove());
   talk.busy = true;
   $("#feedback").hidden = true;
   $("#chat-hint").hidden = true;
@@ -662,16 +663,37 @@ async function sendToAI(userText, { hidden = false } = {}) {
     if (!hidden) {
       talk.log.pop();
       $("#chat").lastElementChild?.remove();
-      $("#chat-input").value = userText;
     }
-    toast(errMessage(e));
+    showChatError(userText, hidden, e);
   } finally {
     talk.busy = false;
     scrollChatEnd();
   }
 }
 
+// 送信できなかった時は、エラー全文と再送信ボタンを会話の中に残す
+function showChatError(userText, hidden, e) {
+  const el = document.createElement("div");
+  el.className = "msg-error";
+  el.innerHTML = `<b>送信できませんでした</b><div class="err-detail"></div>
+    <div class="row"><button class="btn small" type="button">↻ 再送信</button></div>`;
+  el.querySelector(".err-detail").textContent = errMessage(e);
+  el.querySelector("button").addEventListener("click", () => {
+    el.remove();
+    sendToAI(userText, { hidden });
+  });
+  $("#chat").append(el);
+  if (!hidden) $("#chat-input").value = "";
+}
+
 $("#send").addEventListener("click", () => {
+  // マイクが聞いている途中なら止めて、聞き取った分ごと送る
+  if (dict) {
+    dict.wanted = false;
+    dict.userStopped = true;
+    dict.rec.stop();
+    return;
+  }
   const v = $("#chat-input").value.trim();
   if (!v) return;
   $("#chat-input").value = "";
@@ -751,13 +773,14 @@ function startDictation() {
 
 function finishDictation() {
   const spoke = dict.parts.length > 0;
-  const text = dictText();
+  // 自分で止めた時だけ送る（マイク不許可などで止まった時は送らない）
+  const text = spoke || dict.userStopped ? dictText() : "";
   dict = null;
   $("#mic").classList.remove("listening");
   $("#mic").textContent = "🎤 話す";
   micLang = "en";
   renderMicLang();
-  if (spoke && text) {
+  if (text) {
     $("#chat-input").value = "";
     sendToAI(text);
   }
@@ -766,6 +789,7 @@ function finishDictation() {
 $("#mic").addEventListener("click", () => {
   if (!dict) return startDictation();
   dict.wanted = false;
+  dict.userStopped = true;
   dict.rec.stop();
 });
 $("#mic-lang").addEventListener("click", () => {

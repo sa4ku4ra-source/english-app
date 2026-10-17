@@ -157,3 +157,6 @@ input[type="range"] { width: 100%; }
 .sheet p { margin: 6px 0; }
 .sheet-head { display: flex; align-items: center; gap: 8px; }
 .phrase-big { font-size: 1.3rem; }
+
+.msg-error { border: 1px solid var(--danger); border-radius: 12px; padding: 10px 12px; color: var(--danger); background: var(--card); }
+.msg-error .err-detail { color: var(--text); font-size: .85rem; white-space: pre-wrap; word-break: break-word; margin-top: 4px; -webkit-user-select: text; user-select: text; }
