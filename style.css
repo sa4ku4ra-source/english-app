@@ -92,14 +92,13 @@ input[type="range"] { width: 100%; }
 /* フレーズカード */
 .phrase .ja { color: var(--muted); font-size: .9rem; }
 .phrase .en { font-size: 1.25rem; font-weight: 700; margin: 4px 0; }
-.phrase .sounds { font-family: ui-monospace, Menlo, monospace; color: var(--primary); font-size: .95rem; }
-.phrase .sounds-ja { color: var(--muted); font-size: .85rem; }
 .phrase ul { margin: 6px 0; padding-left: 1.2em; }
 .phrase details { margin-top: 8px; }
 .phrase summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 .tag { display: inline-block; font-size: .75rem; padding: 1px 8px; border-radius: 99px; background: var(--accent); color: var(--primary); margin-right: 4px; }
-.alt { padding: 6px 0; border-top: 1px dashed var(--line); }
-.alt:first-child { border-top: none; }
+.alt { padding: 8px 0 0; margin-top: 8px; border-top: 1px dashed var(--line); }
+.en-alt { font-size: 1.1rem; font-weight: 600; }
+.spacer { flex: 1; }
 .player { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .check-result { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--accent); font-size: .95rem; }
 .w-ok { color: var(--ok); font-weight: 600; }
@@ -137,3 +136,22 @@ input[type="range"] { width: 100%; }
   font-size: .9rem; z-index: 20; max-width: 90vw;
 }
 .spinner { color: var(--muted); padding: 12px 0; }
+
+/* 長押しで調べる */
+.lp { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.lp .w { border-radius: 4px; transition: background .15s; }
+.lp .w.hit { background: #fde68a; color: #111; }
+.hint { padding: 12px 4px; }
+.saved-chip { margin-top: 6px; font-size: .8rem; color: var(--primary); }
+.sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 30; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 31;
+  max-width: 720px; margin: 0 auto; max-height: 70vh; overflow-y: auto;
+  background: var(--card); color: var(--text);
+  border-radius: 16px 16px 0 0; border: 1px solid var(--line);
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 24px rgba(0,0,0,.2);
+}
+.sheet p { margin: 6px 0; }
+.sheet-head { display: flex; align-items: center; gap: 8px; }
+.phrase-big { font-size: 1.3rem; }

@@ -10,65 +10,44 @@
 <body>
   <header class="topbar">
     <h1>My English Notebook</h1>
-    <p class="sub">自分の日常会話が、自分だけの教材になる</p>
+    <p class="sub">話して、聞いて、自分だけのストックをつくる</p>
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-view="add">＋ 追加</button>
-    <button class="tab" data-view="library">📚 教材</button>
-    <button class="tab" data-view="talk">💬 会話</button>
+    <button class="tab active" data-view="talk">💬 会話</button>
+    <button class="tab" data-view="library">📌 ストック</button>
     <button class="tab" data-view="settings">⚙️ 設定</button>
   </nav>
 
   <main>
-    <!-- 追加 -->
-    <section id="view-add" class="view active">
-      <div class="card">
-        <label for="ja-input" class="label">普段話している日本語</label>
-        <textarea id="ja-input" rows="3" placeholder="例：ちょっとコンビニ寄ってから行くね"></textarea>
-        <label for="ctx-input" class="label small">場面・相手（任意）</label>
-        <input id="ctx-input" type="text" placeholder="例：友達にLINEで / 職場の同僚に">
+    <!-- 会話 -->
+    <section id="view-talk" class="view active">
+      <div id="talk-targets" class="targets"></div>
+      <div id="chat" class="chat"></div>
+      <p id="chat-hint" class="muted small hint">
+        英語でも日本語でも、普段どおり話しかけてください。AIはずっと英語で返します。<br>
+        「これ英語でなんて言う？」と聞いた表現はストックされ、「他の言い方ある？」でもう1つ追加されます。<br>
+        わからない単語は<b>長押し</b>で調べられます。
+      </p>
+      <div id="feedback" hidden></div>
+      <div class="composer">
+        <textarea id="chat-input" rows="2" placeholder="英語で（困ったら日本語でもOK）"></textarea>
         <div class="row">
-          <button id="ja-mic" class="btn ghost" type="button">🎤 日本語で話して入力</button>
-          <button id="translate-btn" class="btn primary" type="button">ネイティブ英語にする</button>
+          <button id="mic-en" class="btn mic" type="button">🎤 英語</button>
+          <button id="mic-ja" class="btn mic" type="button">🎤 日本語</button>
+          <button id="send" class="btn primary" type="button">送信</button>
         </div>
+        <button id="end-talk" class="btn danger wide" type="button">会話を終了してフィードバックを見る</button>
       </div>
-      <div id="translate-result"></div>
     </section>
 
-    <!-- 教材 -->
+    <!-- ストック -->
     <section id="view-library" class="view">
       <div class="row">
         <input id="search" type="search" placeholder="検索（日本語・英語）">
       </div>
       <p id="lib-count" class="muted"></p>
       <div id="library-list"></div>
-    </section>
-
-    <!-- 会話 -->
-    <section id="view-talk" class="view">
-      <div id="talk-setup" class="card">
-        <p class="label">会話で練習するフレーズを選ぶ</p>
-        <p class="muted small">選んだフレーズを自然に使えるような会話をAIが始めます。未選択なら最近の教材から5つ自動で選びます。</p>
-        <div id="talk-picks"></div>
-        <button id="start-talk" class="btn primary" type="button">会話をはじめる</button>
-      </div>
-
-      <div id="talk-room" hidden>
-        <div id="talk-targets" class="targets"></div>
-        <div id="chat" class="chat"></div>
-        <div class="composer">
-          <textarea id="chat-input" rows="2" placeholder="英語で（困ったら日本語でもOK）"></textarea>
-          <div class="row">
-            <button id="mic-en" class="btn mic" type="button">🎤 英語で話す</button>
-            <button id="mic-ja" class="btn ghost" type="button">🎤 日本語</button>
-            <button id="send" class="btn primary" type="button">送信</button>
-          </div>
-          <button id="end-talk" class="btn danger wide" type="button">会話を終了してフィードバックを見る</button>
-        </div>
-      </div>
-
-      <div id="feedback" hidden></div>
     </section>
 
     <!-- 設定 -->
@@ -98,7 +77,7 @@
         <button id="test-voice" class="btn ghost" type="button">▶ 声をテスト</button>
       </div>
       <div class="card">
-        <p class="label">データ（教材のバックアップ）</p>
+        <p class="label">データ（ストックのバックアップ）</p>
         <div class="row">
           <button id="export" class="btn ghost" type="button">書き出し</button>
           <label class="btn ghost file">読み込み<input id="import" type="file" accept="application/json" hidden></label>
@@ -106,6 +85,10 @@
       </div>
     </section>
   </main>
+
+  <!-- 長押しで開く「調べる」シート -->
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <div id="sheet" class="sheet" hidden></div>
 
   <div id="toast" class="toast" hidden></div>
 

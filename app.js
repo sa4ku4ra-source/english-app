@@ -3,6 +3,7 @@ import Anthropic from "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.131.0/+e
 // ---------- 保存 ----------
 const ITEMS_KEY = "een.items";
 const SETTINGS_KEY = "een.settings";
+const TALK_KEY = "een.talk";
 
 function load(key, fallback) {
   try {
@@ -20,7 +21,11 @@ function save(key, value) {
   }
 }
 
-let items = load(ITEMS_KEY, []);
+// ストック: { id, ja, en, alts: [英文], createdAt, stats }
+let items = load(ITEMS_KEY, []).map((it) => ({
+  ...it,
+  alts: it.alts || (it.alternatives || []).map((a) => a.english).filter(Boolean),
+}));
 const settings = Object.assign(
   { apiKey: "", model: "claude-opus-5-5", voice: "", rate: 0.95, accent: "American" },
   load(SETTINGS_KEY, {})
@@ -33,6 +38,7 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const normText = (s) => String(s || "").toLowerCase().replace(/[’]/g, "'").replace(/[^a-z0-9' ]/g, "").replace(/\s+/g, " ").trim();
 
 let toastTimer;
 function toast(msg) {
@@ -48,8 +54,7 @@ function showView(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   if (name === "library") renderLibrary();
-  if (name === "talk" && !talk.active) renderPicks();
-  window.scrollTo(0, 0);
+  window.scrollTo(0, name === "talk" ? document.body.scrollHeight : 0);
 }
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
 
@@ -106,6 +111,17 @@ async function callClaude({ system, messages, effort = "low", schema, maxTokens 
 function parseJson(text) {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
   return JSON.parse(cleaned);
+}
+
+// ストリーミング途中のJSONから、書き終わった文字列フィールドの値を取り出す
+function earlyField(partial, key) {
+  const m = partial.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+  if (!m) return null;
+  try {
+    return JSON.parse(`"${m[1]}"`);
+  } catch {
+    return null;
+  }
 }
 
 function errMessage(e) {
@@ -181,7 +197,8 @@ function stopSpeaking() {
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let activeRec = null;
 
-function listen(lang, button) {
+// continuous: もう一度ボタンを押すまで聞き続ける（長い文・普段の速さでも途切れない）
+function listen(lang, button, { continuous = false, onInterim } = {}) {
   return new Promise((resolve, reject) => {
     if (!Recognition) return reject(new Error("このブラウザは音声入力に対応していません（Chrome / Safari 推奨）"));
     if (activeRec) {
@@ -191,22 +208,42 @@ function listen(lang, button) {
     stopSpeaking();
     const rec = new Recognition();
     rec.lang = lang;
-    rec.interimResults = false;
+    rec.continuous = continuous;
+    rec.interimResults = continuous;
     rec.maxAlternatives = 3;
     activeRec = rec;
-    button?.classList.add("listening");
-    let result = null;
+    const label = button?.textContent;
+    if (button) {
+      button.classList.add("listening");
+      if (continuous) button.textContent = "■ 話し終えたらタップ";
+    }
+    const finals = [];
+    const sep = lang.startsWith("ja") ? "" : " ";
+    let alternatives = [];
     rec.onresult = (e) => {
-      const r = e.results[0];
-      result = { transcript: r[0].transcript, alternatives: Array.from(r).map((a) => a.transcript) };
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) {
+          finals[i] = r[0].transcript;
+          if (!continuous) alternatives = Array.from(r).map((a) => a.transcript);
+        } else {
+          interim += r[0].transcript;
+        }
+      }
+      onInterim?.((finals.filter(Boolean).join(sep) + sep + interim).trim());
     };
     rec.onerror = (e) => {
       if (e.error !== "no-speech" && e.error !== "aborted") toast(`音声入力エラー: ${e.error}`);
     };
     rec.onend = () => {
       activeRec = null;
-      button?.classList.remove("listening");
-      resolve(result);
+      if (button) {
+        button.classList.remove("listening");
+        button.textContent = label;
+      }
+      const transcript = finals.filter(Boolean).join(sep).replace(/\s+/g, " ").trim();
+      resolve(transcript ? { transcript, alternatives: alternatives.length ? alternatives : [transcript] } : null);
     };
     rec.start();
   });
@@ -246,18 +283,17 @@ function compareSpeech(target, heard) {
   return { marks, score };
 }
 
-async function pronunciationCheck(item, button, outEl) {
+async function pronunciationCheck(item, text, button, outEl) {
   try {
     toast("どうぞ、英文を言ってください");
     const r = await listen(ACCENT_LANG[settings.accent] || "en-US", button);
     if (!r) return;
     const best = r.alternatives
-      .map((a) => ({ a, ...compareSpeech(item.en, a) }))
+      .map((a) => ({ a, ...compareSpeech(text, a) }))
       .sort((x, y) => y.score - x.score)[0];
     item.stats = item.stats || { plays: 0, checks: 0, best: 0 };
     item.stats.checks++;
     item.stats.best = Math.max(item.stats.best || 0, best.score);
-    item.stats.last = best.score;
     saveItems();
     const words = best.marks.map((m) => `<span class="${m.ok ? "w-ok" : "w-miss"}">${esc(m.w)}</span>`).join(" ");
     const msg = best.score >= 90 ? "すばらしい！ネイティブに伝わります" : best.score >= 70 ? "いい感じ！赤い単語を意識してもう一度" : "赤い単語がうまく伝わっていません。お手本を聞いてから再挑戦";
@@ -267,204 +303,214 @@ async function pronunciationCheck(item, button, outEl) {
   }
 }
 
-// ---------- 翻訳（教材づくり） ----------
-const PHRASE_SCHEMA = {
+// ---------- 長押しで調べる ----------
+// 英文を単語ごとの span にして、長押しで lookup を開けるようにする
+function pressableText(text) {
+  const el = document.createElement("span");
+  el.className = "lp";
+  el.innerHTML = text
+    .split(/(\s+)/)
+    .map((tok) => (/\S/.test(tok) ? `<span class="w">${esc(tok)}</span>` : tok))
+    .join("");
+  let timer = null;
+  let start = null;
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  el.addEventListener("pointerdown", (e) => {
+    const w = e.target.closest(".w");
+    if (!w) return;
+    start = { x: e.clientX, y: e.clientY };
+    timer = setTimeout(() => {
+      timer = null;
+      w.classList.add("hit");
+      navigator.vibrate?.(15);
+      openLookup(text, w.textContent.replace(/^[^\w']+|[^\w']+$/g, ""), () => w.classList.remove("hit"));
+    }, 450);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (timer && start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) cancel();
+  });
+  el.addEventListener("pointerup", cancel);
+  el.addEventListener("pointercancel", cancel);
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  return el;
+}
+
+const LOOKUP_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["english", "sounds_like", "sounds_like_kana", "pronunciation_tips", "key_phrases", "alternatives", "scene"],
+  required: ["phrase", "meaning_ja", "sound_ja", "sentence_ja"],
   properties: {
-    english: { type: "string" },
-    sounds_like: { type: "string" },
-    sounds_like_kana: { type: "string" },
-    pronunciation_tips: { type: "array", items: { type: "string" } },
-    key_phrases: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["phrase", "meaning"],
-        properties: { phrase: { type: "string" }, meaning: { type: "string" } },
-      },
-    },
-    alternatives: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["english", "nuance"],
-        properties: { english: { type: "string" }, nuance: { type: "string" } },
-      },
-    },
-    scene: { type: "string" },
+    phrase: { type: "string" },
+    meaning_ja: { type: "string" },
+    sound_ja: { type: "string" },
+    sentence_ja: { type: "string" },
   },
 };
 
-function translateSystem() {
-  return `You turn a Japanese learner's everyday Japanese into the English a native ${settings.accent} speaker would actually say in the same situation — casual, spoken, natural. Avoid textbook or overly literal translations; use the contractions, phrasal verbs and idioms natives really use, while keeping the speaker's tone (casual stays casual, polite stays polite).
+const LOOKUP_SYSTEM = `A Japanese learner long-pressed a word in an English sentence because they didn't catch or understand it. Explain briefly in Japanese.
 
-The learner cares most about pronunciation, so describe how the sentence really sounds at natural speed.
+- phrase: the word, or the whole chunk/idiom/phrasal verb it belongs to in this sentence (e.g. "swing" in "swing by" -> "swing by").
+- meaning_ja: what the phrase means here, in one short Japanese sentence.
+- sound_ja: one short Japanese sentence on how this part actually sounds at natural speed (linking, reductions, flap T, stress). No katakana spellings. Empty string if nothing notable.
+- sentence_ja: a natural Japanese translation of the whole sentence.`;
 
-Fields:
-- english: the single most natural way to say it.
-- sounds_like: a respelling of how it sounds at natural speed, showing linking and reductions, with STRESSED syllables in capitals, e.g. "I'm GONna GRAB a BITE" -> "aim-GONna-GRA-buh-BITE".
-- sounds_like_kana: the same sound written in katakana for a Japanese reader, stressed parts marked with ＊ before them.
-- pronunciation_tips: 2-4 short tips in Japanese about linking, reductions, flap T, stress and intonation specific to this sentence.
-- key_phrases: the reusable chunks in the sentence with Japanese meanings.
-- alternatives: 1-3 other natural ways to say it, each with its nuance in Japanese (who would say it, how casual).
-- scene: a short Japanese label for the situation (e.g. "友達との予定").`;
+const lookupCache = new Map();
+
+function closeSheet() {
+  $("#sheet").hidden = true;
+  $("#sheet-backdrop").hidden = true;
 }
+$("#sheet-backdrop").addEventListener("click", closeSheet);
 
-// ストリーミング途中のJSONから、書き終わった "english" の値を取り出す
-function earlyEnglish(partial) {
-  const m = partial.match(/"english"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  if (!m) return null;
-  try {
-    return JSON.parse(`"${m[1]}"`);
-  } catch {
-    return null;
-  }
-}
-
-async function translate(ja, context, fixedEnglish, onEnglish) {
-  let prompt = `Japanese: ${ja}`;
-  if (context) prompt += `\nSituation: ${context}`;
-  if (fixedEnglish) prompt += `\nUse exactly this English as the main expression: ${fixedEnglish}`;
-  const { text } = await callClaude({
-    system: translateSystem(),
-    messages: [{ role: "user", content: prompt }],
-    effort: "low",
-    schema: PHRASE_SCHEMA,
-    onText: onEnglish
-      ? (soFar) => {
-          if (!onEnglish) return;
-          const en = earlyEnglish(soFar);
-          if (en) {
-            onEnglish(en);
-            onEnglish = null;
-          }
-        }
-      : undefined,
-  });
-  const data = parseJson(text);
-  return {
-    id: uid(),
-    ja,
-    context: context || "",
-    en: data.english,
-    soundsLike: data.sounds_like,
-    soundsLikeKana: data.sounds_like_kana,
-    tips: data.pronunciation_tips,
-    keyPhrases: data.key_phrases,
-    alternatives: data.alternatives,
-    scene: data.scene,
-    createdAt: Date.now(),
-    stats: { plays: 0, checks: 0, best: 0 },
+async function openLookup(sentence, word, onClose) {
+  const sheet = $("#sheet");
+  sheet.hidden = false;
+  $("#sheet-backdrop").hidden = false;
+  sheet.innerHTML = `<p class="label">${esc(word)}</p><p class="spinner">調べています…</p>`;
+  const done = () => {
+    onClose?.();
+    closeSheet();
   };
-}
-
-$("#translate-btn").addEventListener("click", async () => {
-  const ja = $("#ja-input").value.trim();
-  if (!ja) return toast("日本語を入力してください");
-  const btn = $("#translate-btn");
-  btn.disabled = true;
-  $("#translate-result").innerHTML = `<p class="spinner">ネイティブ表現を考えています…</p>`;
+  $("#sheet-backdrop").onclick = done;
   try {
-    let spoken = null;
-    // 英文ができた時点で先に表示・読み上げ（発音のコツなどは後から届く）
-    const item = await translate(ja, $("#ctx-input").value.trim(), "", (en) => {
-      spoken = en;
-      $("#translate-result").innerHTML = `<div class="card phrase"><div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div><p class="spinner">発音のコツ・言い換えを準備中…</p></div>`;
-      speak(en);
-    });
-    items.unshift(item);
-    saveItems();
-    $("#ja-input").value = "";
-    $("#ctx-input").value = "";
-    $("#translate-result").innerHTML = "";
-    $("#translate-result").append(phraseCard(item, { fresh: true }));
-    if (spoken !== item.en) speak(item.en);
+    const key = `${sentence}\u0000${word}`;
+    if (!lookupCache.has(key)) {
+      const { text } = await callClaude({
+        system: LOOKUP_SYSTEM,
+        messages: [{ role: "user", content: `Sentence: ${sentence}\nLong-pressed word: ${word}` }],
+        effort: "low",
+        schema: LOOKUP_SCHEMA,
+        maxTokens: 2000,
+      });
+      lookupCache.set(key, parseJson(text));
+    }
+    const d = lookupCache.get(key);
+    if (sheet.hidden) return;
+    const stocked = findItem(sentence);
+    sheet.innerHTML = `
+      <div class="sheet-head"><b class="phrase-big">${esc(d.phrase)}</b> <button class="btn small" data-act="say-phrase">▶</button></div>
+      <p>${esc(d.meaning_ja)}</p>
+      ${d.sound_ja ? `<p class="muted">🔊 ${esc(d.sound_ja)}</p>` : ""}
+      <p class="muted small">文全体：${esc(d.sentence_ja)}</p>
+      <div class="row">
+        <button class="btn small" data-act="say-sentence">▶ 文を聞く</button>
+        <button class="btn small" data-act="slow">🐢 ゆっくり</button>
+        <button class="btn small" data-act="stock" ${stocked ? "disabled" : ""}>${stocked ? "✓ ストック済み" : "📌 この文をストック"}</button>
+        <button class="btn small ghost" data-act="close">閉じる</button>
+      </div>`;
+    sheet.onclick = (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.dataset.act === "say-phrase") speak(d.phrase);
+      if (b.dataset.act === "say-sentence") speak(sentence);
+      if (b.dataset.act === "slow") speak(sentence, { rate: Math.max(0.5, settings.rate * 0.65) });
+      if (b.dataset.act === "close") done();
+      if (b.dataset.act === "stock") {
+        addItem(sentence, d.sentence_ja);
+        b.disabled = true;
+        b.textContent = "✓ ストックしました";
+      }
+    };
   } catch (e) {
-    $("#translate-result").innerHTML = "";
+    done();
     toast(errMessage(e));
-  } finally {
-    btn.disabled = false;
   }
-});
+}
 
-$("#ja-mic").addEventListener("click", async (e) => {
-  try {
-    const r = await listen("ja-JP", e.currentTarget);
-    if (r) $("#ja-input").value = ($("#ja-input").value + " " + r.transcript).trim();
-  } catch (err) {
-    toast(errMessage(err));
-  }
-});
+// ---------- ストック ----------
+function findItem(en) {
+  const n = normText(en);
+  return items.find((it) => normText(it.en) === n || (it.alts || []).some((a) => normText(a) === n));
+}
 
-// ---------- 教材カード ----------
-function phraseCard(item, { fresh = false } = {}) {
-  const el = document.createElement("div");
-  el.className = "card phrase";
-  const alts = (item.alternatives || [])
-    .map(
-      (a, i) =>
-        `<div class="alt"><button class="btn small" data-alt="${i}">▶</button> <b>${esc(a.english)}</b><br><span class="muted small">${esc(a.nuance)}</span></div>`
-    )
-    .join("");
-  const s = item.stats || {};
-  el.innerHTML = `
-    ${item.scene ? `<span class="tag">${esc(item.scene)}</span>` : ""}${item.source === "feedback" ? `<span class="tag">会話から</span>` : ""}
-    <div class="ja">${esc(item.ja)}</div>
-    <div class="en">${esc(item.en)}</div>
-    ${item.soundsLike ? `<div class="sounds">🔊 ${esc(item.soundsLike)}</div>` : ""}
-    ${item.soundsLikeKana ? `<div class="sounds-ja">${esc(item.soundsLikeKana)}</div>` : ""}
-    <div class="player">
-      <button class="btn small" data-act="play">▶ 再生</button>
-      <button class="btn small" data-act="slow">🐢 ゆっくり</button>
-      <button class="btn small" data-act="repeat">🔁 3回リピート</button>
-      <button class="btn small" data-act="stop">■</button>
-      <button class="btn small" data-act="check">🎤 発音チェック</button>
-      <button class="btn small" data-act="talk">💬 これで会話</button>
-    </div>
-    <div class="check-out"></div>
-    <details ${fresh ? "open" : ""}>
-      <summary>発音のコツ・使えるフレーズ・言い換え</summary>
-      ${item.tips?.length ? `<p class="label small">発音のコツ</p><ul>${item.tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
-      ${item.keyPhrases?.length ? `<p class="label small">使えるフレーズ</p><ul>${item.keyPhrases.map((k) => `<li><b>${esc(k.phrase)}</b> — ${esc(k.meaning)}</li>`).join("")}</ul>` : ""}
-      ${alts ? `<p class="label small">他の言い方</p>${alts}` : ""}
-      <div class="row"><button class="btn small danger" data-act="delete">削除</button></div>
-    </details>
-    <div class="stats">再生 ${s.plays || 0}回 ・ 発音チェック ${s.checks || 0}回${s.checks ? ` ・ ベスト ${s.best}点` : ""}</div>
-  `;
-  const bump = () => {
-    item.stats = item.stats || { plays: 0, checks: 0, best: 0 };
-    item.stats.plays++;
-    saveItems();
-  };
-  el.addEventListener("click", (e) => {
-    const btn = e.target.closest("button");
-    if (!btn) return;
-    if (btn.dataset.alt !== undefined) return speak(item.alternatives[+btn.dataset.alt].english);
-    switch (btn.dataset.act) {
-      case "play": stopSpeaking(); bump(); return speak(item.en);
-      case "slow": stopSpeaking(); bump(); return speak(item.en, { rate: Math.max(0.5, settings.rate * 0.65) });
-      case "repeat": bump(); return speakRepeat(item.en, 3);
+function addItem(en, ja) {
+  const existing = findItem(en);
+  if (existing) return existing;
+  const item = { id: uid(), ja: ja || "", en, alts: [], createdAt: Date.now(), stats: { plays: 0, checks: 0, best: 0 } };
+  items.unshift(item);
+  saveItems();
+  return item;
+}
+
+function addAlternative(baseEn, en, ja) {
+  if (findItem(en)) return findItem(en);
+  const base = baseEn && findItem(baseEn);
+  if (!base) return addItem(en, ja);
+  base.alts.push(en);
+  saveItems();
+  return base;
+}
+
+function sentenceRow(item, text, isAlt) {
+  const row = document.createElement("div");
+  row.className = isAlt ? "alt" : "main-en";
+  const line = document.createElement("div");
+  line.className = isAlt ? "en-alt" : "en";
+  line.append(pressableText(text));
+  row.append(line);
+  const bar = document.createElement("div");
+  bar.className = "player";
+  bar.innerHTML = `
+    <button class="btn small" data-act="play">▶</button>
+    <button class="btn small" data-act="slow">🐢</button>
+    <button class="btn small" data-act="repeat">🔁 3回</button>
+    <button class="btn small" data-act="stop">■</button>
+    <button class="btn small" data-act="check">🎤 発音チェック</button>`;
+  const out = document.createElement("div");
+  bar.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const bump = () => {
+      item.stats = item.stats || { plays: 0, checks: 0, best: 0 };
+      item.stats.plays++;
+      saveItems();
+    };
+    switch (b.dataset.act) {
+      case "play": stopSpeaking(); bump(); return speak(text);
+      case "slow": stopSpeaking(); bump(); return speak(text, { rate: Math.max(0.5, settings.rate * 0.65) });
+      case "repeat": bump(); return speakRepeat(text, 3);
       case "stop": return stopSpeaking();
-      case "check": return pronunciationCheck(item, btn, el.querySelector(".check-out"));
-      case "talk": return startTalk([item.id]);
-      case "delete":
-        if (confirm("この教材を削除しますか？")) {
-          items = items.filter((x) => x.id !== item.id);
-          saveItems();
-          el.remove();
-          renderLibraryCount();
-        }
+      case "check": return pronunciationCheck(item, text, b, out);
     }
   });
+  row.append(bar, out);
+  return row;
+}
+
+function phraseCard(item) {
+  const el = document.createElement("div");
+  el.className = "card phrase";
+  el.innerHTML = item.ja ? `<div class="ja">${esc(item.ja)}</div>` : "";
+  el.append(sentenceRow(item, item.en, false));
+  (item.alts || []).forEach((a) => el.append(sentenceRow(item, a, true)));
+  const foot = document.createElement("div");
+  foot.className = "row";
+  const s = item.stats || {};
+  foot.innerHTML = `
+    <span class="stats">再生 ${s.plays || 0}回${s.checks ? ` ・ 発音ベスト ${s.best}点` : ""}</span>
+    <span class="spacer"></span>
+    <button class="btn small" data-act="talk">💬 これで会話</button>
+    <button class="btn small danger" data-act="delete">削除</button>`;
+  foot.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.act === "talk") startPractice([item.id]);
+    if (b.dataset.act === "delete" && confirm("このストックを削除しますか？")) {
+      items = items.filter((x) => x.id !== item.id);
+      saveItems();
+      el.remove();
+      renderLibraryCount();
+    }
+  });
+  el.append(foot);
   return el;
 }
 
 function renderLibraryCount() {
-  $("#lib-count").textContent = items.length ? `教材 ${items.length} 件` : "";
+  $("#lib-count").textContent = items.length ? `ストック ${items.length} 件（わからない単語は長押し）` : "";
 }
 
 function renderLibrary() {
@@ -473,124 +519,176 @@ function renderLibrary() {
   list.innerHTML = "";
   renderLibraryCount();
   if (!items.length) {
-    list.innerHTML = `<div class="card muted">まだ教材がありません。「＋ 追加」で普段の日本語を英語にしてみましょう。</div>`;
+    list.innerHTML = `<div class="card muted">まだストックがありません。会話で「これ英語でなんて言う？」と聞くと、ここに貯まっていきます。</div>`;
     return;
   }
   items
-    .filter((it) => !q || `${it.ja} ${it.en} ${it.scene}`.toLowerCase().includes(q))
+    .filter((it) => !q || `${it.ja} ${it.en} ${(it.alts || []).join(" ")}`.toLowerCase().includes(q))
     .forEach((it) => list.append(phraseCard(it)));
 }
 $("#search").addEventListener("input", renderLibrary);
 
 // ---------- 会話 ----------
-const talk = { active: false, targets: [], history: [], log: [], busy: false };
+// history: API に送る履歴（返ってきた content は改変せずに積む）
+// log: 画面表示とフィードバック用
+const talk = Object.assign({ history: [], log: [], targets: [], busy: false }, load(TALK_KEY, {}), { busy: false });
+const saveTalk = () => save(TALK_KEY, { history: talk.history, log: talk.log, targets: talk.targets });
 
-function renderPicks() {
-  const box = $("#talk-picks");
-  $("#talk-setup").hidden = false;
-  if (!items.length) {
-    box.innerHTML = `<p class="muted">教材がまだないので、フリートークになります。</p>`;
-    return;
-  }
-  box.innerHTML = items
-    .slice(0, 30)
-    .map(
-      (it) =>
-        `<label class="pick"><input type="checkbox" value="${it.id}"><span><b>${esc(it.en)}</b><br><span class="muted small">${esc(it.ja)}</span></span></label>`
-    )
-    .join("");
-}
-
-$("#start-talk").addEventListener("click", () => {
-  const ids = [...document.querySelectorAll("#talk-picks input:checked")].map((i) => i.value);
-  startTalk(ids);
-});
+const CHAT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reply", "new_expressions"],
+  properties: {
+    reply: { type: "string" },
+    new_expressions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["english", "meaning_ja", "alternative_of"],
+        properties: {
+          english: { type: "string" },
+          meaning_ja: { type: "string" },
+          alternative_of: { type: "string" },
+        },
+      },
+    },
+  },
+};
 
 function talkSystem() {
-  const list = talk.targets.length
-    ? talk.targets.map((t) => `- "${t.en}" (meaning: ${t.ja})`).join("\n")
-    : "(none — just have a friendly casual chat about everyday life)";
-  return `You are a friendly native ${settings.accent} English speaker chatting with a Japanese learner who wants to sound like a native and is practicing speaking out loud. Your replies are read aloud by text-to-speech.
-
-Target phrases the learner is practicing:
-${list}
-
-How to run the conversation:
-- Set up a realistic, everyday scene where the target phrases fit naturally. Use them yourself now and then so the learner hears them in context, and steer toward moments where the learner can say them.
-- Talk the way natives really talk: contractions, casual phrasing, natural reactions ("Oh nice!", "No way", "Gotcha").
-- Keep each reply short: 1-3 spoken sentences, usually ending with a question or prompt that is easy to answer.
-- Reply in English only, every single time. If the learner writes or speaks Japanese, understand it and keep going in English — like a friend would, you can naturally check what they meant in English ("Oh, you mean you're beat?") and carry on. Never reply in Japanese and never translate into Japanese.
-- Don't correct mistakes or teach during the conversation; the learner gets feedback afterwards. Just respond to what they meant.
+  const practice = talk.targets.length
+    ? `\nThe learner chose these phrases to practice in this conversation. Set up an everyday scene where they fit, use them yourself now and then, and give the learner chances to say them:\n${talk.targets.map((t) => `- "${t.en}"`).join("\n")}\n`
+    : "";
+  return `You are a friendly native ${settings.accent} English speaker having a casual, everyday conversation with a Japanese learner who already gets by in English and wants to pick up how natives really talk, by ear. Your replies are read aloud by text-to-speech.
+${practice}
+Conversation style:
+- Talk the way natives really talk: contractions, casual phrasing, natural reactions. Keep each reply short — 1-3 spoken sentences — and keep the conversation going.
+- Reply in English only, every single time. If the learner writes or speaks Japanese, understand it and carry on in English. Never reply in Japanese.
+- Don't correct mistakes or teach during the conversation; the learner gets feedback afterwards.
 - The learner's messages come from speech recognition, so ignore missing punctuation and obvious mis-hearings.
-- Plain spoken text only: no markdown, lists, emoji, or stage directions.`;
+- Plain spoken text only: no markdown, lists, emoji, or stage directions.
+
+Expressions the learner asks for (this is how their personal phrase stock grows):
+- When they ask how to say something (e.g. "これ英語でなんて言う？", "How do you say ...?", "英語で〜って言いたい"), give the ONE most natural way a native would say it, right in your reply, briefly and without explanation, then keep chatting. Put it in new_expressions with its Japanese meaning and alternative_of "".
+- When they ask for another way to say it (e.g. "他の言い方ある？", "Any other way to say it?"), give exactly ONE different natural expression and put it in new_expressions with alternative_of set to the exact English of the expression it's an alternative to.
+- Otherwise new_expressions is empty. Never add expressions or example sentences they didn't ask for.
+
+Output: reply is exactly what you say out loud.`;
 }
 
-async function startTalk(ids) {
-  let targets = items.filter((it) => ids.includes(it.id));
-  if (!targets.length) targets = items.slice(0, 5);
-  Object.assign(talk, { active: true, targets, history: [], log: [], busy: false });
-  showView("talk");
-  $("#talk-setup").hidden = true;
-  $("#feedback").hidden = true;
-  $("#talk-room").hidden = false;
-  $("#chat").innerHTML = "";
-  $("#talk-targets").innerHTML = targets.length
-    ? `<span class="muted small">今日のフレーズ：</span><br>` + targets.map((t) => `<span class="tag">${esc(t.en)}</span>`).join(" ")
-    : `<span class="muted small">フリートーク</span>`;
-  // 最初のユーザーターンは画面に出さない「開始の合図」
-  await sendToAI("(Start the conversation now: open the scene with your first line.)", { hidden: true });
-}
-
-function addBubble(role, text) {
+function addBubble(entry) {
   const el = document.createElement("div");
-  el.className = `msg ${role}`;
-  el.innerHTML = `<div>${esc(text)}</div>`;
-  if (role === "ai") {
+  el.className = `msg ${entry.role === "learner" ? "me" : "ai"}`;
+  if (entry.role === "partner") {
+    const body = document.createElement("div");
+    body.append(pressableText(entry.text));
+    el.append(body);
     const tools = document.createElement("div");
     tools.className = "tools";
-    tools.innerHTML = `<button data-r="1">▶</button> <button data-r="0.7">🐢</button>`;
+    tools.innerHTML = `<button data-r="1">▶</button> <button data-r="0.65">🐢</button>`;
     tools.addEventListener("click", (e) => {
       const b = e.target.closest("button");
       if (!b) return;
       stopSpeaking();
-      speak(text, { rate: settings.rate * +b.dataset.r });
+      speak(entry.text, { rate: settings.rate * +b.dataset.r });
     });
     el.append(tools);
+    (entry.saved || []).forEach((s) => {
+      const chip = document.createElement("div");
+      chip.className = "saved-chip";
+      chip.textContent = `📌 ストック: ${s}`;
+      el.append(chip);
+    });
+  } else {
+    el.textContent = entry.text;
   }
   $("#chat").append(el);
-  el.scrollIntoView({ behavior: "smooth", block: "end" });
   return el;
+}
+
+function renderChat() {
+  $("#chat").innerHTML = "";
+  talk.log.forEach(addBubble);
+  $("#chat-hint").hidden = talk.log.length > 0;
+  $("#talk-targets").innerHTML = talk.targets.length
+    ? `<span class="muted small">練習中のフレーズ：</span><br>` + talk.targets.map((t) => `<span class="tag">${esc(t.en)}</span>`).join(" ")
+    : "";
+}
+
+function scrollChatEnd() {
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 }
 
 async function sendToAI(userText, { hidden = false } = {}) {
   if (talk.busy) return;
   talk.busy = true;
+  $("#feedback").hidden = true;
+  $("#chat-hint").hidden = true;
   if (!hidden) {
-    addBubble("me", userText);
-    talk.log.push({ role: "learner", text: userText });
+    const entry = { role: "learner", text: userText };
+    talk.log.push(entry);
+    addBubble(entry);
   }
   talk.history.push({ role: "user", content: userText });
-  const typing = addBubble("ai typing", "…");
+  const typing = document.createElement("div");
+  typing.className = "msg ai typing";
+  typing.textContent = "…";
+  $("#chat").append(typing);
+  scrollChatEnd();
+
+  let shown = null;
   try {
     const { content, text } = await callClaude({
       system: talkSystem(),
       messages: talk.history,
       effort: "low",
-      maxTokens: 2000,
+      schema: CHAT_SCHEMA,
+      maxTokens: 3000,
+      // 返事の文ができた時点で読み上げを始める
+      onText: (soFar) => {
+        if (shown) return;
+        const reply = earlyField(soFar, "reply");
+        if (reply) {
+          shown = reply;
+          typing.textContent = reply;
+          typing.classList.remove("typing");
+          speak(reply);
+        }
+      },
     });
-    // 返ってきた content はそのまま履歴に積む（思考ブロックも含めて改変しない）
     talk.history.push({ role: "assistant", content });
+    let data;
+    try {
+      data = parseJson(text);
+    } catch {
+      data = { reply: text, new_expressions: [] };
+    }
+    const saved = [];
+    for (const x of data.new_expressions || []) {
+      if (!x.english) continue;
+      if (x.alternative_of) addAlternative(x.alternative_of, x.english, x.meaning_ja);
+      else addItem(x.english, x.meaning_ja);
+      saved.push(x.english);
+    }
+    const entry = { role: "partner", text: data.reply, saved };
+    talk.log.push(entry);
     typing.remove();
-    addBubble("ai", text);
-    talk.log.push({ role: "partner", text });
-    speak(text);
+    addBubble(entry);
+    if (shown !== data.reply) speak(data.reply);
+    saveTalk();
   } catch (e) {
     typing.remove();
     talk.history.pop();
-    if (!hidden) talk.log.pop();
+    if (!hidden) {
+      talk.log.pop();
+      $("#chat").lastElementChild?.remove();
+      $("#chat-input").value = userText;
+    }
     toast(errMessage(e));
   } finally {
     talk.busy = false;
+    scrollChatEnd();
   }
 }
 
@@ -608,24 +706,53 @@ $("#chat-input").addEventListener("keydown", (e) => {
 });
 
 async function micSend(lang, btn) {
+  const input = $("#chat-input");
+  const before = input.value.trim();
   try {
-    const r = await listen(lang, btn);
-    if (r?.transcript) sendToAI(r.transcript);
+    const r = await listen(lang, btn, {
+      continuous: true,
+      onInterim: (t) => (input.value = (before + " " + t).trim()),
+    });
+    if (r === null && activeRec === null && !input.value.trim()) return;
+    const text = r ? (before + " " + r.transcript).trim() : input.value.trim();
+    if (text) {
+      input.value = "";
+      sendToAI(text);
+    }
   } catch (e) {
     toast(errMessage(e));
   }
 }
-$("#mic-en").addEventListener("click", (e) => micSend(ACCENT_LANG[settings.accent] || "en-US", e.currentTarget));
-$("#mic-ja").addEventListener("click", (e) => micSend("ja-JP", e.currentTarget));
+$("#mic-en").addEventListener("click", (e) => {
+  if (activeRec) return activeRec.stop();
+  micSend(ACCENT_LANG[settings.accent] || "en-US", e.currentTarget);
+});
+$("#mic-ja").addEventListener("click", (e) => {
+  if (activeRec) return activeRec.stop();
+  micSend("ja-JP", e.currentTarget);
+});
+
+function resetTalk(targets = []) {
+  Object.assign(talk, { history: [], log: [], targets, busy: false });
+  saveTalk();
+  renderChat();
+}
+
+async function startPractice(ids) {
+  const targets = items.filter((it) => ids.includes(it.id)).map((it) => ({ id: it.id, en: it.en }));
+  resetTalk(targets);
+  $("#feedback").hidden = true;
+  showView("talk");
+  await sendToAI("(Start the conversation now: open the scene with your first line.)", { hidden: true });
+}
 
 // ---------- フィードバック ----------
 const FEEDBACK_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "good_points", "corrections", "target_usage"],
+  required: ["summary", "corrections"],
   properties: {
     summary: { type: "string" },
-    good_points: { type: "array", items: { type: "string" } },
     corrections: {
       type: "array",
       items: {
@@ -641,74 +768,60 @@ const FEEDBACK_SCHEMA = {
         },
       },
     },
-    target_usage: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["phrase", "used", "comment"],
-        properties: { phrase: { type: "string" }, used: { type: "boolean" }, comment: { type: "string" } },
-      },
-    },
   },
 };
 
-const FEEDBACK_SYSTEM = `You are an expert English coach for Japanese learners who want to sound like natural native speakers. You review a finished practice conversation and give feedback in Japanese.
+const FEEDBACK_SYSTEM = `You are an English coach for a Japanese learner who already gets by in English and wants to sound like a native. Review a finished conversation and give feedback in Japanese. Keep it short and practical.
 
 The learner's lines came through speech recognition: ignore punctuation, capitalization and obvious mis-hearings; judge only word choice, grammar and naturalness.
 
-- corrections: every learner line that a native would find unnatural, wrong, or overly textbook-like. Give what they said, the natural way a native would say it in that moment, its Japanese meaning, kind ("grammar" for errors, "unnatural" for correct-but-odd), and a short Japanese explanation of why. For lines the learner said in Japanese, use kind "japanese" and give the natural English they could have said. Skip lines that are already natural.
-- good_points: specific things they did well, in Japanese.
-- target_usage: for each target phrase, whether the learner used it and a short Japanese comment.
-- summary: 2-3 encouraging Japanese sentences on overall impression and the one thing to focus on next.`;
+- corrections: each learner line a native would find unnatural, wrong, or textbook-like. Give what they said, how a native would say it in that moment, its Japanese meaning, kind ("grammar" for errors, "unnatural" for correct-but-odd), and a one-sentence Japanese explanation. For lines where the learner fell back to Japanese to say something (not questions like "how do you say this?", which were already answered), use kind "japanese" and give the natural English. Skip lines that are already natural.
+- summary: 1-2 Japanese sentences — overall impression and the one thing to focus on next.`;
 
 $("#end-talk").addEventListener("click", async () => {
   stopSpeaking();
   if (!talk.log.some((l) => l.role === "learner")) {
-    talk.active = false;
-    $("#talk-room").hidden = true;
-    renderPicks();
+    resetTalk();
     return;
   }
+  if (talk.busy) return;
   const btn = $("#end-talk");
   btn.disabled = true;
   const fb = $("#feedback");
   fb.hidden = false;
   fb.innerHTML = `<p class="spinner">会話をふり返っています…</p>`;
-  $("#talk-room").hidden = true;
+  scrollChatEnd();
   const transcript = talk.log.map((l) => `${l.role === "learner" ? "Learner" : "Partner"}: ${l.text}`).join("\n");
-  const targets = talk.targets.map((t) => `- ${t.en}`).join("\n") || "(none)";
   try {
     const { text } = await callClaude({
       system: FEEDBACK_SYSTEM,
-      messages: [{ role: "user", content: `Target phrases:\n${targets}\n\nConversation:\n${transcript}` }],
+      messages: [{ role: "user", content: `Conversation:\n${transcript}` }],
       effort: "medium",
       schema: FEEDBACK_SCHEMA,
       maxTokens: 8000,
     });
-    renderFeedback(parseJson(text));
+    const data = parseJson(text);
+    resetTalk();
+    renderFeedback(data);
   } catch (e) {
     fb.innerHTML = `<div class="card">フィードバックの作成に失敗しました：${esc(errMessage(e))}</div>`;
   } finally {
     btn.disabled = false;
-    talk.active = false;
   }
 });
 
 function renderFeedback(data) {
   const fb = $("#feedback");
+  fb.hidden = false;
+  $("#chat-hint").hidden = true;
   const kindLabel = { grammar: "文法", unnatural: "より自然に", japanese: "日本語→英語" };
   fb.innerHTML = `
     <div class="card">
       <p class="label">ふり返り</p>
       <p>${esc(data.summary)}</p>
-      ${data.good_points?.length ? `<p class="label small">よかったところ</p><ul>${data.good_points.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
-      ${data.target_usage?.length ? `<p class="label small">今日のフレーズ</p><ul>${data.target_usage.map((t) => `<li>${t.used ? "✅" : "⬜"} <b>${esc(t.phrase)}</b> — ${esc(t.comment)}</li>`).join("")}</ul>` : ""}
+      ${data.corrections?.length ? "" : "<p>不自然な表現はありませんでした 🎉</p>"}
     </div>
-    <p class="label">${data.corrections?.length ? "直したほうがいい表現" : "不自然な表現はありませんでした 🎉"}</p>
-    <div id="fb-list"></div>
-    <button id="fb-again" class="btn primary wide" type="button">もう一度会話する</button>
-  `;
+    <div id="fb-list"></div>`;
   const list = fb.querySelector("#fb-list");
   (data.corrections || []).forEach((c) => {
     const el = document.createElement("div");
@@ -716,36 +829,25 @@ function renderFeedback(data) {
     el.innerHTML = `
       <span class="tag">${kindLabel[c.kind] || ""}</span>
       <div class="said">${esc(c.you_said)}</div>
-      <div class="better">→ ${esc(c.natural)}</div>
-      <div class="muted small">${esc(c.meaning_ja)}</div>
+      <div class="better"></div>
       <div>${esc(c.explanation)}</div>
       <div class="row">
         <button class="btn small" data-act="play">▶ 聞く</button>
-        <button class="btn small" data-act="add">＋ 教材に追加</button>
+        <button class="btn small" data-act="add" ${findItem(c.natural) ? "disabled" : ""}>${findItem(c.natural) ? "✓ ストック済み" : "📌 ストック"}</button>
       </div>`;
-    el.addEventListener("click", async (e) => {
+    el.querySelector(".better").append("→ ", pressableText(c.natural));
+    el.addEventListener("click", (e) => {
       const b = e.target.closest("button");
       if (!b) return;
       if (b.dataset.act === "play") return speak(c.natural);
       if (b.dataset.act === "add") {
+        addItem(c.natural, c.meaning_ja);
         b.disabled = true;
-        b.textContent = "追加中…";
-        try {
-          const item = await translate(c.meaning_ja, "", c.natural);
-          item.source = "feedback";
-          items.unshift(item);
-          saveItems();
-          b.textContent = "✓ 追加しました";
-        } catch (err) {
-          b.disabled = false;
-          b.textContent = "＋ 教材に追加";
-          toast(errMessage(err));
-        }
+        b.textContent = "✓ ストックしました";
       }
     });
     list.append(el);
   });
-  fb.querySelector("#fb-again").addEventListener("click", () => startTalk(talk.targets.map((t) => t.id)));
 }
 
 // ---------- 設定 ----------
@@ -796,14 +898,17 @@ $("#import").addEventListener("change", async (e) => {
     const data = JSON.parse(await file.text());
     const incoming = Array.isArray(data.items) ? data.items : [];
     const known = new Set(items.map((i) => i.id));
-    const added = incoming.filter((i) => i?.id && i?.en && !known.has(i.id));
+    const added = incoming
+      .filter((i) => i?.id && i?.en && !known.has(i.id))
+      .map((i) => ({ ...i, alts: i.alts || [] }));
     items = [...added, ...items].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     saveItems();
-    toast(`${added.length} 件の教材を読み込みました`);
+    toast(`${added.length} 件のストックを読み込みました`);
   } catch {
     toast("読み込めないファイルです");
   }
   e.target.value = "";
 });
 
+renderChat();
 if (!settings.apiKey) showView("settings");
